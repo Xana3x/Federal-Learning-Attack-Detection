@@ -1,6 +1,8 @@
 import io
+import math
 import socket
 import ssl
+import threading
 import yaml
 import warnings  # 屏蔽warning
 import struct
@@ -19,6 +21,11 @@ from getData import GetDataSet
 from torch.utils.data import TensorDataset
 from torch.utils.data import DataLoader
 import os
+import random
+import copy
+
+
+MAX_CHUNK_SIZE = 10 * 1024 * 1024  # 10MB
 
 def makedir(path):
     folder = os.path.exists(path)
@@ -46,9 +53,35 @@ def dec(parameters, secret_key):  # 解密模型参数
         parameters1[var] = parameters[var].decrypt(secret_key)
     return parameters1
 
+def send_in_chunks(socket, data):
+    """Send data in chunks of 10MB."""
+    chunk_size = 5 * 1024 * 1024  # 10MB
+    total_size = len(data)
+    socket.sendall(struct.pack('!Q', total_size))  # Send total data size
 
+    # Send the data in chunks
+    for i in range(0, total_size, chunk_size):
+        chunk = data[i:i + chunk_size]
+        socket.sendall(chunk)
+        time.sleep(1)
+    print(f"Sent data in chunks, total size: {total_size}")
 
-    pass
+def receive_in_chunks(socket, total_size):
+    """Receive data in chunks of 10MB."""
+    chunk_size = 5 * 1024 * 1024  # 10MB
+    received_data = b''
+
+    while len(received_data) < total_size:
+        remaining_size = total_size - len(received_data)
+        bytes_to_receive = min(chunk_size, remaining_size)
+        chunk = socket.recv(bytes_to_receive)
+        if not chunk:
+            return None
+        received_data += chunk
+
+    print(f"Received data in chunks, total size: {total_size}")
+    return received_data
+
 
 class SSLClient:
     def __init__(self, config_file):
@@ -59,6 +92,7 @@ class SSLClient:
         self.loss_func= F.cross_entropy
         self.opti = None
         self.dev = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        #self.dev=torch.device("cpu")
         self.net=None
         #self.dataset=None
         self.train_data=None
@@ -66,8 +100,23 @@ class SSLClient:
         self.IID=None
         self.train_ds=None
         self.train_dl=None
+        self.test_ds=None
+        self.test_dl=None
+        self.test_data=None
+        self.test_label=None
         self.context = None
         self.secret_key = None
+
+    def MPA(self,parameter):
+        new_parameter = dict.fromkeys(parameter, 0)  # 加权聚合后的全局模型
+        for var in parameter:
+            new_parameter[var] = parameter[var].reshape(-1).to(self.dev)
+            new_parameter[var] = np.array(new_parameter[var])
+            np.random.shuffle(new_parameter[var])
+            new_parameter[var] = new_parameter[var].reshape(parameter[var].shape)
+            new_parameter[var] = torch.from_numpy(new_parameter[var])
+            new_parameter[var] = new_parameter[var].to(self.dev)
+        return new_parameter
 
 
     def fetch_key(self):
@@ -139,6 +188,9 @@ class SSLClient:
         连接到服务器
         '''
         self.client_socket = self.create_client_socket()    
+        buffer_size=200*1024*1024
+        self.client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, buffer_size)
+        self.client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, buffer_size)
         print(f"Connected to {self.config['host']}:{self.config['port']}")
 
     def receive_notification(self):
@@ -179,15 +231,17 @@ class SSLClient:
                         self.net = cifar10_cnn()
                     # 如果有多个GPU
 
-                    if torch.cuda.device_count() > 1:
-                        print("Let's use", torch.cuda.device_count(), "GPUs!")
-                        self.net = torch.nn.DataParallel(self.net)
+                    # if torch.cuda.device_count() > 1:
+                    #     print("Let's use", torch.cuda.device_count(), "GPUs!")
+                    #     self.net = torch.nn.DataParallel(self.net)
 
                     self.net = self.net.to(self.dev)
 
                     self.dataset = GetDataSet(self.parameters['dataset'], self.parameters['iid'])
                     self.train_data = self.dataset.train_data
                     self.train_label = self.dataset.train_label
+                    self.test_data=self.dataset.test_data
+                    self.test_label=self.dataset.test_label
 
                     if self.parameters['dataset'] == 'cifar10':
                         self.opti = optim.Adam(self.net.parameters(), lr=self.parameters['learning_rate'])
@@ -197,8 +251,13 @@ class SSLClient:
                         self.opti = optim.SGD(self.net.parameters(), lr=self.parameters['learning_rate'], momentum=0.9)
                         print("优化算法：", self.opti)
 
+                    
+                    
                     self.train_ds = TensorDataset(torch.tensor(self.train_data), torch.tensor(self.train_label))
                     self.train_dl = DataLoader(self.train_ds, batch_size=self.parameters['batch_size'], shuffle=True)
+                    self.test_ds = TensorDataset(torch.tensor(self.test_data), torch.tensor(self.test_label))
+                    self.test_dl = DataLoader(self.test_ds, batch_size=100, shuffle=False)
+                    
 
                     self.client_socket.sendall("Parameters acknowledged".encode())
                     return
@@ -225,9 +284,12 @@ class SSLClient:
             for round in range(self.parameters['num_communication_rounds']):
                 print(f"Starting communication round {round + 1}.")
 
-                state_dict_enc, state_dict_Gaussian=self.local_update(self.net.state_dict())
-                #print("!!!!!!!!!!!",state_dict_Gaussian)
-                self.send_data_to_server(self.client_socket,  state_dict_Gaussian, state_dict_enc )
+                state_dict_enc, state_dict_Gaussian=self.local_update()
+                
+                if self.config['attack']=='MPA':
+                    state_dict_Gaussian=self.MPA(state_dict_Gaussian)
+
+                self.send_data_to_server(self.client_socket,  state_dict_Gaussian, state_dict_enc)
                 self.receive_encrypted_model_weights(self.client_socket)
                 print(f"Communication round {round + 1} completed.")
             print("All communication rounds completed.")
@@ -239,11 +301,105 @@ class SSLClient:
         finally:
             self.client_socket.close()
             print("Connection closed.")
+        
+    
+    def recv_all(self, sock, n):
+        data = b''
+        while len(data) < n:
+            packet = sock.recv(n - len(data))
+            if not packet:
+                return None
+            data += packet
+        return data
+    
+    
+    def receive_large_data(self, client_socket, num_connections, total_size):
+        ports = []
+        sockets = []
+        for _ in range(num_connections):
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.bind(('', 0))
+            port = s.getsockname()[1]
+            ports.append(port)
+            s.listen(1)
+            sockets.append(s)
+        
+        # 发送端口号列表给客户端
+        client_socket.sendall(struct.pack(f'!{num_connections}H', *ports))
+        
+        data = [b"" for _ in range(num_connections)]
+        threads = []
+
+        def receive_chunk(index):
+            conn, addr = sockets[index].accept()
+            #print(f"Connection from {addr} for chunk {index}")
+            try:
+                # 接收 "Ready to send" 消息
+                message = conn.recv(1024).decode()
+                #print(f"Received message: {message}")
+                if message != "Ready to send":
+                    raise ValueError(f"Unexpected message: {message}")
+                
+                # 发送 "Ready to receive" 消息
+                conn.sendall("Ready to receive".encode())
+                
+                # 接收数据大小
+                size_data = conn.recv(8)
+                chunk_size = struct.unpack('!Q', size_data)[0]
+                #print(f"Expected chunk size: {chunk_size}")
+                
+                # 确认接收到大小信息
+                conn.sendall("Size received".encode())
+                
+                # 接收数据
+                received_data = b''
+                while len(received_data) < chunk_size:
+                    chunk = conn.recv(min(MAX_CHUNK_SIZE, chunk_size - len(received_data)))
+                    if not chunk:
+                        raise ConnectionError("Connection closed before receiving all data")
+                    received_data += chunk
+                
+                #print(f"Received {len(received_data)} bytes for chunk {index}")
+                
+                # 存储接收到的数据
+                data[index] = received_data
+                
+                # 发送确认消息
+                conn.sendall("Data received".encode())
+            
+            except Exception as e:
+                print(f"Error in receiving chunk {index}: {e}")
+            finally:
+                conn.close()
+            
+
+        for i in range(num_connections):
+            thread = threading.Thread(target=receive_chunk, args=(i,))
+            thread.start()
+            threads.append(thread)
+
+        for thread in threads:
+            thread.join()
+
+        for s in sockets:
+            s.close()
+
+        return b''.join(data)[:total_size]
+
+    def recv_all(self, sock, n):
+        data = b''
+        while len(data) < n:
+            packet = sock.recv(n - len(data))
+            if not packet:
+                return None
+            data += packet
+        return data
+
 
     def receive_encrypted_model_weights(self, client_socket):
         """
         接收服务器发送的加密模型权重。
-
+        
         :param client_socket: 客户端套接字
         :return: 加密模型权重,如果接收失败则返回None
         """
@@ -258,33 +414,56 @@ class SSLClient:
             # 向服务器确认客户端已准备好接收数据
             client_socket.sendall("Ready to receive".encode())
 
-            # 接收数据大小
-            size_data = client_socket.recv(8)
-            data_size = struct.unpack('!Q', size_data)[0]
-            print(f"Expected size for encrypted weights: {data_size}")
+            # 接收键的数量
+            num_keys_data = client_socket.recv(4)
+            num_keys = struct.unpack('!I', num_keys_data)[0]
+            #print(f"Expected number of keys: {num_keys}")
 
-            # 接收数据
-            weights_encoded = b''
-            while len(weights_encoded) < data_size:
-                chunk = client_socket.recv(min(4096, data_size - len(weights_encoded)))
-                if not chunk:
-                    raise RuntimeError("Socket connection broken")
-                weights_encoded += chunk
+            # 存储接收的加密模型权重
+            received_parameters = {}
 
-            # 解码模型权重
-            model_weights = pickle.loads(weights_encoded)
+            for _ in range(num_keys):
+                # 接收键
+                key_size_data = client_socket.recv(8)
+                key_size = struct.unpack('!Q', key_size_data)[0]
+                key_serialized = self.recv_all(client_socket, key_size)
+                key = pickle.loads(key_serialized)
 
-            print("Model weights received successfully.")
+                # 接收值大小
+                value_size_data = client_socket.recv(8)
+                value_size = struct.unpack('!Q', value_size_data)[0]
+                #print(f"Receiving value of size {value_size} for key {key}")
+
+                # 接收连接数量
+                num_connections_data = client_socket.recv(4)
+                num_connections = struct.unpack('!I', num_connections_data)[0]
+
+                if num_connections > 1:
+                    # 为大型数据创建新的监听端口
+                    value_serialized = self.receive_large_data(client_socket, num_connections, value_size)
+                else:
+                    # 接收小型数据
+                    value_serialized = self.recv_all(client_socket, value_size)
+                
+                # 解密并处理模型权重
+                value = ts.ckks_vector_from(self.context, value_serialized)
+                received_parameters[key] = value
+
+                # 向服务器确认接收了一对键值对
+                client_socket.sendall("Pair received".encode())
+
+            print("Encrypted weights received successfully.")
 
             # 确认接收完毕
             client_socket.sendall("Encrypted weights received".encode())
+            
+            # 将接收到的加密权重存储到模型中
+            for key, value in received_parameters.items():
+                self.net.state_dict()[key].data = torch.tensor(value.decrypt())
+            
+            self.net.to(self.dev)
 
-            # 处理接收到的加密权重
-            for var in model_weights:
-                model_weights[var] = ts.ckks_vector_from(self.context, model_weights[var])
-                self.net.state_dict()[var].data = torch.from_numpy(model_weights[var].decrypt()).to(self.dev)
-
-            return model_weights
+            return received_parameters
 
         except Exception as e:
             print(f"Error receiving encrypted weights: {e}")
@@ -297,19 +476,25 @@ class SSLClient:
             model_parameters_dec[var] = torch.tensor(model_parameters_dec[var], dtype=torch.float32, device=torch.device(self.dev))
     
 
-    def local_update(self, model_parameters):
+    def local_update(self):
         # 传入网络模型，并加载global_parameters参数的
-        self.net.load_state_dict(model_parameters, strict=True)
+        flip_probability = 0.5  # Probability of flipping a label
+        num_classes = 10  # Assuming MNIST or CIFAR-10
         # 载入Client自有数据集
         # 加载本地数据
         #self.train_dl = DataLoader(self.train_ds, batch_size=self.parameters['batch_size'], shuffle=True)
-
+        def flip_label(label):
+            if random.random() < flip_probability:
+                return random.randint(0, num_classes - 1)
+            return label
         # 设置迭代次数
         for epoch in range(self.parameters['epoch']):
             for data, label in self.train_dl:
                 # 加载到GPU上
                 data, label = data.to(self.dev), label.to(self.dev)
                 # 模型上传入数据
+                if self.config['attack']=='LFA':
+                    label = flip_label(label)
                 preds = self.net(data)
                 # 计算损失函数
                 '''
@@ -348,58 +533,128 @@ class SSLClient:
                 model_parameters[var] = model_parameters[var]+torch.normal(0, ((c**2) * (s**2))/(epsilon * epsilon), model_parameters[var].shape).to(dev)
             return model_parameters
         # Net.state_dict_Gaussian = addnoice(l2(global_parameters), 0.01, 40, Net.state_dict())  # 设置高斯噪声的参数并加噪
-        state_dict=self.net.state_dict()
-        state_dict_Gaussian = addnoice(40, 60, 0.01,  state_dict,self.parameters['dataset'],self.dev)  # 设置高斯噪声的参数并加噪
 
         for var in self.net.state_dict():  # 裁剪阈值为40
             self.net.state_dict()[var] = self.net.state_dict()[var] / max(1, l2(self.net.state_dict())/40)
+        
+        
+        state_dict = copy.deepcopy(self.net.state_dict())
+        state_dict_Gaussian = addnoice(40, 60, 0.01,  state_dict,self.parameters['dataset'],self.dev)  # 设置高斯噪声的参数并加噪
+
+        
         state_dict = enc(state_dict, self.context)
         print("encrpyt completed!!!!")
         # Net.state_dict_Gaussian = dict.fromkeys(Net.state_dict(), 0)  # 初始化加噪后的局部模型参数
         return state_dict, state_dict_Gaussian  # 返回本地训练的模型参数Net.state_dict()和高斯加噪版Net.state_dict_Gaussian
 
-    def send_data_to_server(self, client_socket, noised_weights, encrypted_weights):
+    def send_data_to_server(self, main_socket, noised_weights, encrypted_weights):
         for data, data_name in zip((noised_weights, encrypted_weights), ("noised_weights", "encrypted_weights")):
             # 发送特殊消息告知服务器即将传输的数据类型
             message = f"Ready to send {data_name}"
-            client_socket.sendall(message.encode())
-            print(f"Sent message: {message}")
+            main_socket.sendall(message.encode())
+            #print(f"Sent message: {message}")
 
             # 等待服务器确认
-            confirmation = client_socket.recv(1024).decode()
+            confirmation = main_socket.recv(1024).decode()
             while confirmation != "Ready to receive":
-                confirmation = client_socket.recv(1024).decode()
+                confirmation = main_socket.recv(1024).decode()
                 print(f"Server is not ready for {data_name}, waiting...")
                 time.sleep(0.5)
 
-            # 序列化数据
-            if data_name == "encrypted_weights":
-                data_serialized = serialize_encrypted_params(data)
-            else:
-                data_serialized = pickle.dumps(data)
+            # 发送键的数量
+            num_keys = len(data)
+            main_socket.sendall(struct.pack('!I', num_keys))
+            #print(f"Sent number of keys: {num_keys}")
 
-            data_size = len(data_serialized)
+            # 逐个发送键值对
+            for key, value in data.items():
+                # 序列化键
+                key_serialized = pickle.dumps(key)
+                key_size = len(key_serialized)
+                main_socket.sendall(struct.pack('!Q', key_size))
+                main_socket.sendall(key_serialized)
 
-            # 发送数据大小
-            client_socket.sendall(struct.pack('!Q', data_size))
-            print(f"Sent {data_name} size: {data_size}")
+                # 序列化值
+                if data_name == "encrypted_weights":
+                    value_serialized = value.serialize()
+                else:
+                    value_serialized = pickle.dumps(value)
+                value_size = len(value_serialized)
+                main_socket.sendall(struct.pack('!Q', value_size))
 
-            sent_bytes=0
-            while sent_bytes < data_size:
-                sent_bytes += client_socket.send(data_serialized[sent_bytes:])
-                print(f"Sent {sent_bytes} bytes of {data_size} bytes.")
+                num_connections = math.ceil(value_size / MAX_CHUNK_SIZE)
+                main_socket.sendall(struct.pack('!I', num_connections))
 
-            print(f"Sent {data_name}.")
+                if num_connections > 1:
+                    # 接收新的端口号列表
+                    ports = struct.unpack(f'!{num_connections}H', main_socket.recv(2 * num_connections))
+                    
+                    # 发送大型数据
+                    self.send_large_data(value_serialized, ('127.0.0.1', ports))
+                else:
+                    # 发送小型数据
+                    main_socket.sendall(value_serialized)
 
-            # 等待服务器确认接收
-            confirmation = client_socket.recv(1024).decode()
+                # 等待服务器确认接收
+                confirmation = main_socket.recv(1024).decode()
+                while confirmation != "Pair received":
+                    confirmation = main_socket.recv(1024).decode()
+                    print(f"Waiting for pair acknowledgment...")
+                    time.sleep(0.5)
+
+            #print(f"Sent {data_name}.")
+
+            # 等待服务器确认接收所有数据
+            confirmation = main_socket.recv(1024).decode()
             while confirmation != f"{data_name} received":
-                confirmation = client_socket.recv(1024).decode()
+                confirmation = main_socket.recv(1024).decode()
                 print(f"Waiting for {data_name} acknowledgment...")
                 time.sleep(0.5)
-            print(f"{data_name} acknowledged.")
+            #print(f"{data_name} acknowledged.")
 
         print("All model parameters sent and acknowledged.")
+
+    def send_large_data(self, data, address):
+        sockets = [socket.socket(socket.AF_INET, socket.SOCK_STREAM) for _ in range(len(address[1]))]
+        try:
+            for i, s in enumerate(sockets):
+                s.connect((address[0], address[1][i]))
+                start = i * MAX_CHUNK_SIZE
+                end = min((i + 1) * MAX_CHUNK_SIZE, len(data))
+                chunk = data[start:end]
+                chunk_size = len(chunk)
+                
+                # 发送 "Ready to send" 消息
+                s.sendall("Ready to send".encode())
+                
+                # 等待 "Ready to receive" 消息
+                message = s.recv(1024).decode()
+                #print(f"Received message: {message}")
+                if message != "Ready to receive":
+                    raise ValueError(f"Unexpected message: {message}")
+                
+                # 发送数据大小
+                s.sendall(struct.pack('!Q', chunk_size))
+                
+                # 等待确认接收到大小信息
+                message = s.recv(1024).decode()
+                if message != "Size received":
+                    raise ValueError(f"Unexpected message: {message}")
+                
+                # 发送数据
+                s.sendall(chunk)
+                #print(f"Sent data chunk {i + 1}/{len(address[1])} ({chunk_size} bytes)")
+                
+                # 等待确认接收到数据
+                message = s.recv(1024).decode()
+                if message != "Data received":
+                    raise ValueError(f"Unexpected message: {message}")
+        
+        except Exception as e:
+            print(f"Error in sending data: {e}")
+        finally:
+            for s in sockets:
+                s.close()
 
     def receive_model_weights(self, client_socket):
         """
@@ -438,7 +693,21 @@ class SSLClient:
         except Exception as e:
             print(f"Error receiving model weights: {e}")
             return None
+        
+    def test(self):
+        self.net.eval()
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for data, label in self.test_dl:
+                data, label = data.to(self.dev), label.to(self.dev)
+                outputs = self.net(data)
+                _, predicted = torch.max(outputs.data, 1)
+                total += label.size(0)
+                correct += (predicted == label).sum().item()
+        print(f"Accuracy of the network on the 10000 test images: {100 * correct / total}%")
 
 if __name__ == "__main__":
     client = SSLClient('./client.config.yaml')
     client.run()
+    client.test()

@@ -1,6 +1,6 @@
 
 host: "127.0.0.1"
-port: 12371
+port: 12372
 certfile: "./cert.pem"
 attack: NA    #attack为攻击方式label flipping attack:LFA  //model poisoning attacks:MPA   //no attack:NA
 path_to_save: ./checkpoints
