@@ -4,4 +4,4 @@ pandas==1.2.4
 tenseal==0.3.12
 torch==1.13.1+cu116
 torchvision==0.14.1
-tqdm==4.59.0
+PyYaml==6.0.2

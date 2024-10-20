@@ -1,8 +1,7 @@
 import numpy as np
 import gzip
 import os
-import platform
-import pickle
+
 
 import pandas as pd
 import torchvision
@@ -30,31 +29,31 @@ class GetDataSet(object):
 
     def mnistDataSetConstruct(self, isIID):
         # 加载数据集
-        data_dir = r'.\data\MNIST'
+        data_dir = r'./data/MNIST'
         # data_dir = r'./data/MNIST'
         train_images_path = os.path.join(data_dir, 'train-images-idx3-ubyte.gz')
         train_labels_path = os.path.join(data_dir, 'train-labels-idx1-ubyte.gz')
         test_images_path = os.path.join(data_dir, 't10k-images-idx3-ubyte.gz')
         test_labels_path = os.path.join(data_dir, 't10k-labels-idx1-ubyte.gz')
         train_images = extract_images(train_images_path)
-        print("-"*5+"train_images"+"-"*5)
+        #print("-"*5+"train_images"+"-"*5)
         # 输出第一张图片
         #print(train_images[0].reshape(28,28))
-        print(train_images.shape) # (60000, 28, 28, 1) 一共60000 张图片，每一张是28*28*1
-        print('-'*22+"\n")
+       # print(train_images.shape) # (60000, 28, 28, 1) 一共60000 张图片，每一张是28*28*1
+        #print('-'*22+"\n")
         train_labels = extract_labels(train_labels_path)
-        print("-" * 5 + "train_labels" + "-" * 5)
-        print(train_labels.shape) # (60000, 10)
-        print('-'*22+"\n")
+        #print("-" * 5 + "train_labels" + "-" * 5)
+        #print(train_labels.shape) # (60000, 10)
+        #print('-'*22+"\n")
 
         test_images = extract_images(test_images_path)
-        print("-" * 5 + "test_images" + "-" * 5)
-        print(test_images.shape) # (10000, 28, 28, 1)
-        print('-' * 22 + "\n")
+        #print("-" * 5 + "test_images" + "-" * 5)
+        #print(test_images.shape) # (10000, 28, 28, 1)
+        #print('-' * 22 + "\n")
         test_labels = extract_labels(test_labels_path)
-        print("-" * 5 + "test_labels" + "-" * 5)
-        print(test_labels.shape) # (10000, 10) 10000维
-        print('-' * 22 + "\n")
+        #print("-" * 5 + "test_labels" + "-" * 5)
+        #print(test_labels.shape) # (10000, 10) 10000维
+        #print('-' * 22 + "\n")
 
         assert train_images.shape[0] == train_labels.shape[0]
         assert test_images.shape[0] == test_labels.shape[0]
@@ -66,7 +65,7 @@ class GetDataSet(object):
         assert train_images.shape[3] == 1
         assert test_images.shape[3] == 1
         train_images = train_images.reshape(train_images.shape[0], train_images.shape[1] * train_images.shape[2])
-        print(train_images.shape)
+       #print(train_images.shape)
         test_images = test_images.reshape(test_images.shape[0], test_images.shape[1] * test_images.shape[2])
         train_images = train_images.astype(np.float32)
         train_images = np.multiply(train_images, 1.0 / 255.0)
@@ -113,8 +112,8 @@ class GetDataSet(object):
         train_data = train_set.data  # (50000, 32, 32, 3)
         train_labels = train_set.targets
         train_labels = np.array(train_labels)  # 将标签转化为
-        print(type(train_labels))  # <class 'numpy.ndarray'>
-        print(train_labels.shape)  # (50000,)
+        #print(type(train_labels))  # <class 'numpy.ndarray'>
+        #print(train_labels.shape)  # (50000,)
 
         test_data = test_set.data  # 测试数据
         test_labels = test_set.targets
@@ -125,7 +124,7 @@ class GetDataSet(object):
 
         # 把数据改成(50000,3,32,32)才符合当前神经网络训练规则
         train_images = np.transpose(train_data, (0, 3, 1, 2))
-        print("数据集维度", train_images.shape)
+        #print("数据集维度", train_images.shape)
         test_images = np.transpose(test_data, (0, 3, 1, 2))
         # ---------------------------归一化处理------------------------------#
         train_images = train_images.astype(np.float32)
@@ -168,7 +167,7 @@ def _read32(bytestream):
 
 def extract_images(filename):
     """Extract the images into a 4D uint8 numpy array [index, y, x, depth]."""
-    print('Extracting', filename)
+    #print('Extracting', filename)
     with gzip.open(filename) as bytestream:
         magic = _read32(bytestream)
         if magic != 2051:
@@ -195,7 +194,7 @@ def dense_to_one_hot(labels_dense, num_classes=10):
 
 def extract_labels(filename):
     """Extract the labels into a 1D uint8 numpy array [index]."""
-    print('Extracting', filename)
+   #print('Extracting', filename)
     with gzip.open(filename) as bytestream:
         magic = _read32(bytestream)
         if magic != 2049:
@@ -209,7 +208,7 @@ def extract_labels(filename):
 
 
 if __name__=="__main__":
-    'test data set'
+    #'test data set'
     mnistDataSet = GetDataSet('cifar10', 1)  # test NON-IID
     if type(mnistDataSet.train_data) is np.ndarray and type(mnistDataSet.test_data) is np.ndarray and \
             type(mnistDataSet.train_label) is np.ndarray and type(mnistDataSet.test_label) is np.ndarray:

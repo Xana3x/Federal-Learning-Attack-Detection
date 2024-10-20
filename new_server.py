@@ -132,7 +132,8 @@ class SSLServer:
         self.num_send_enc_model=0
         self.send_enc_model_event=threading.Event()
         self.num_send_enc_model_lock=threading.Lock()
-        os.environ['CUDA_VISIBLE_DEVICES'] = self.config['gpu']
+        self.similarity_list=[0]*self.config['num_of_clients']
+        #os.environ['CUDA_VISIBLE_DEVICES'] = self.config['gpu']
 
         # mnist_2nn
         if self.config['model_name'] == 'mnist_2nn':
@@ -150,7 +151,7 @@ class SSLServer:
             self.dev=torch.device("cpu")
             print("We use CPU!")
         elif torch.cuda.is_available():
-            self.dev = torch.device("cuda")
+            self.dev = torch.device(f"cuda:{self.config['gpu']}")
             print("We use GPU!")
         else:
             self.dev = torch.device("cpu")
@@ -226,6 +227,11 @@ class SSLServer:
         num_in_comm = self.config['num_of_clients']  # 每轮参与通信的客户端数量
 
         for round in range(self.config['num_communication_rounds']):
+            if round%10==0 and round!=0:
+                #从similarity中找出数值最大的index
+                max_index=self.similarity_list.index(min(self.similarity_list))
+                print(f"client{i},ip:{self.client_list[max_index]['addr']} seems to be a malicious client.!!!")
+                self.similarity_list=[0]*self.config['num_of_clients']
             print('*'*100)
             print(f"Round {round+1} begins.")
             # 为每个客户端发送模型参数
@@ -264,6 +270,9 @@ class SSLServer:
         for i in range(len(similarity_list)):
             if i<=int(len(similarity_list)/2):
                 sum_cos+=similarity_list[index[i]]
+        
+        for i in range(len(similarity_list)):
+            self.similarity_list[i]+=similarity_list[i]
 
         for i in range(len(similarity_list)):
             if i<=int(len(similarity_list)/2):
@@ -587,7 +596,7 @@ class SSLServer:
             try:
                 # 接收 "Ready to send" 消息
                 message = conn.recv(1024).decode()
-                print(f"Received message: {message}")
+                #print(f"Received message: {message}")
                 if message != "Ready to send":
                     raise ValueError(f"Unexpected message: {message}")
                 

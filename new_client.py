@@ -7,7 +7,7 @@ import yaml
 import warnings  # 屏蔽warning
 import struct
 import pickle
-warnings.filterwarnings("ignore", message="WARNING: The input does not fit in a single ciphertext*")
+warnings.filterwarnings("ignore", message="WARNING: The input does not*")
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -91,7 +91,7 @@ class SSLClient:
         self.parameters = None
         self.loss_func= F.cross_entropy
         self.opti = None
-        self.dev = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        self.dev = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
         #self.dev=torch.device("cpu")
         self.net=None
         #self.dataset=None
@@ -256,7 +256,7 @@ class SSLClient:
                     self.train_ds = TensorDataset(torch.tensor(self.train_data), torch.tensor(self.train_label))
                     self.train_dl = DataLoader(self.train_ds, batch_size=self.parameters['batch_size'], shuffle=True)
                     self.test_ds = TensorDataset(torch.tensor(self.test_data), torch.tensor(self.test_label))
-                    self.test_dl = DataLoader(self.test_ds, batch_size=100, shuffle=False)
+                    self.test_dl = DataLoader(self.test_ds, batch_size=self.parameters['batch_size'], shuffle=False)
                     
 
                     self.client_socket.sendall("Parameters acknowledged".encode())
@@ -282,7 +282,7 @@ class SSLClient:
                 print("Failed to load model weights.")
             
             for round in range(self.parameters['num_communication_rounds']):
-                print(f"Starting communication round {round + 1}.")
+                print(f"***********************************************Starting communication round {round + 1}.**************************************************")
 
                 state_dict_enc, state_dict_Gaussian=self.local_update()
                 
@@ -483,18 +483,19 @@ class SSLClient:
         # 载入Client自有数据集
         # 加载本地数据
         #self.train_dl = DataLoader(self.train_ds, batch_size=self.parameters['batch_size'], shuffle=True)
-        def flip_label(label):
+        def flip_label(label, flip_probability, num_classes):
             if random.random() < flip_probability:
-                return random.randint(0, num_classes - 1)
+                # 生成一个与 label 形状相同的随机张量，值在 [0, num_classes - 1] 之间
+                return torch.randint(0, num_classes, label.shape, dtype=label.dtype, device=label.device)
             return label
         # 设置迭代次数
-        for epoch in range(self.parameters['epoch']):
+        for _ in range(self.parameters['epoch']):
             for data, label in self.train_dl:
                 # 加载到GPU上
                 data, label = data.to(self.dev), label.to(self.dev)
                 # 模型上传入数据
                 if self.config['attack']=='LFA':
-                    label = flip_label(label)
+                    label = flip_label(label, flip_probability, num_classes)
                 preds = self.net(data)
                 # 计算损失函数
                 '''
@@ -698,14 +699,27 @@ class SSLClient:
         self.net.eval()
         correct = 0
         total = 0
-        with torch.no_grad():
-            for data, label in self.test_dl:
-                data, label = data.to(self.dev), label.to(self.dev)
-                outputs = self.net(data)
-                _, predicted = torch.max(outputs.data, 1)
-                total += label.size(0)
-                correct += (predicted == label).sum().item()
-        print(f"Accuracy of the network on the 10000 test images: {100 * correct / total}%")
+        if self.parameters['dataset'] == 'cifar10':
+            with torch.no_grad():
+                for data, label in self.test_dl:
+                    data, label = data.to(self.dev), label.to(self.dev)
+                    outputs = self.net(data)
+                    label = label.long()
+                    _, predicted = torch.max(outputs.data, 1)
+                    total += label.size(0)
+                    correct += (predicted == label).sum().item()
+            print(f"Accuracy of the network on the 10000 test images: {100 * correct / total}%")
+        else:
+            with torch.no_grad():
+                for data, label in self.test_dl:
+                    data, label = data.to(self.dev), label.to(self.dev)
+                    outputs = self.net(data)
+                    label = label.long()
+                    _, predicted = torch.max(outputs, 1)
+                    argmaxed_label=torch.argmax(label,1)
+                    total += label.size(0)
+                    correct += (predicted == argmaxed_label).sum().item()
+            print(f"Accuracy of the network on the 10000 test images: {100 * correct / total}%")
 
 if __name__ == "__main__":
     client = SSLClient('./client.config.yaml')
