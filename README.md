@@ -1,9 +1,6 @@
-### paper:APFL: 一种隐私保护的抗投毒攻击联邦学习方案
+### Federal-Learning-Attack-Detection
 
-### 描述
-现有联邦学习改进方案大多仅从隐私保护或抗投毒攻击方面进行改进，不能兼顾两种攻击，为了同时解决联邦学习中的推断攻击和投毒攻击，提出了一个隐私保护的抗投毒攻击联邦学习方案 (APFL)，使用差分隐私技术和根据模型间余弦相似度赋予各客户端相应聚合权重的方式设计了模型检测算法MAD,使用同态加密技术将本地模型加权聚合。
-
-### environment
+### 环境
 
 1.python3.8
 
@@ -11,21 +8,25 @@
 
 3.pip install -r requirements.txt
 
-### usage
+### 使用
 
-Run the code
+其中new_client.py是客户端主程序，加载了client.config.yaml  
+可以配置服务器IP端口等，同时还可以设定投毒方式，目前只支持模型投毒和标签反转  
+new_server.py为服务器主程序，配置文件为server.config.yaml  
+可以配置数据集，模型，batch_size等超参数  
+key_distribution_server.py为密钥分发服务器，配置文件为key_distribution_server.py  
+在开启环境前，请先将密钥分发服务器运行起来，后续聚合服务器和客户端都将从密钥服务器拿CKKS.context  
+开启后服务器将处于监听状态，直到有指定数目的客户端主动连接才会进行训练
 
-```asp
-python server.py -nc 21 -cf 1 -E 1 -B 16 -dataset cifar10 -Algorithm APFL -mn cifar10_cnn  -ncomm 100 -iid 1 -lr 0.0002 -g 0
-```
 ### 文件和目录结构
-| 文件/目录         | 描述                  |
-| ----------------- | ---------            |
-| `data/`           | 数据集目录            |
-| `log/`            | 记录目录              |
-| `model/`          | 模型配置文件          |
-| `clients_ckks.py` | 客户端                |
-| `getData.py`      | 配置数据集            |
-| `Models.py`       | 模型配置              |
-| `requirements.txt`| 项目依赖              |
-| `server.py`       | 服务器端/执行         |
+| 文件/目录                       | 描述                 |
+| -----------------              | ---------            |
+| `data/`                        | 数据集目录            |
+| `checkpoints/`                 | checkpointer保存路径  |
+| `model/`                       | 模型配置文件          |
+| `new_client.py`                | 客户端                |
+| `getData.py`                   | 配置数据集            |
+| `Models.py`                    | 模型配置              |
+| `requirements.txt`             | 项目依赖              |
+| `new_server.py`                | 服务器端              |
+| `key_distribution_server.py`   | 密钥分发服务器端       |
